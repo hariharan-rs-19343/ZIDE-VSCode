@@ -1,0 +1,277 @@
+{
+  "name": "zide-vscode",
+  "displayName": "ZIDE",
+  "description": "Tomcat server management, deploy-sync with hot-swap, deployment config patching, and new project wizard for ZIDE development",
+  "version": "1.0.0",
+  "publisher": "zoho",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/.zide_resources/service.xml"
+  ],
+  "main": "./dist/extension.js",
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "zide",
+          "title": "ZIDE",
+          "icon": "resources/zide-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "zide": [
+        {
+          "id": "zide.servers",
+          "name": "Servers"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "zide.run",
+        "title": "Run Server",
+        "category": "ZIDE",
+        "icon": "$(play)"
+      },
+      {
+        "command": "zide.debug",
+        "title": "Debug Server",
+        "category": "ZIDE",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "zide.stop",
+        "title": "Stop Server",
+        "category": "ZIDE",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "zide.restart",
+        "title": "Restart Server",
+        "category": "ZIDE",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "zide.build",
+        "title": "Build",
+        "category": "ZIDE",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "zide.addServer",
+        "title": "Add Server",
+        "category": "ZIDE",
+        "icon": "$(add)"
+      },
+      {
+        "command": "zide.editServer",
+        "title": "Edit Server",
+        "category": "ZIDE",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "zide.removeServer",
+        "title": "Remove Server",
+        "category": "ZIDE",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "zide.newProject",
+        "title": "New Project",
+        "category": "ZIDE",
+        "icon": "$(file-directory-create)"
+      },
+      {
+        "command": "zide.updateDeployment",
+        "title": "Update Deployment",
+        "category": "ZIDE",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "zide.deploymentProperties",
+        "title": "Deployment Properties",
+        "category": "ZIDE",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "zide.appLogs",
+        "title": "Application Logs",
+        "category": "ZIDE",
+        "icon": "$(output)"
+      },
+      {
+        "command": "zide.customBuild",
+        "title": "Custom Build",
+        "category": "ZIDE"
+      },
+      {
+        "command": "zide.localBuild",
+        "title": "Local Build",
+        "category": "ZIDE"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "zide.run",
+        "key": "ctrl+shift+i",
+        "mac": "ctrl+shift+i"
+      },
+      {
+        "command": "zide.debug",
+        "key": "ctrl+shift+d",
+        "mac": "ctrl+shift+d"
+      },
+      {
+        "command": "zide.stop",
+        "key": "ctrl+shift+.",
+        "mac": "ctrl+shift+."
+      },
+      {
+        "command": "zide.build",
+        "key": "ctrl+shift+b",
+        "mac": "ctrl+shift+b"
+      },
+      {
+        "command": "zide.appLogs",
+        "key": "ctrl+shift+l",
+        "mac": "ctrl+shift+l"
+      },
+      {
+        "command": "zide.customBuild",
+        "key": "ctrl+shift+alt+u",
+        "mac": "ctrl+shift+alt+u"
+      },
+      {
+        "command": "zide.localBuild",
+        "key": "ctrl+shift+u",
+        "mac": "ctrl+shift+u"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "zide.addServer",
+          "when": "view == zide.servers",
+          "group": "navigation"
+        },
+        {
+          "command": "zide.newProject",
+          "when": "view == zide.servers",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "zide.run",
+          "when": "view == zide.servers && viewItem == serverStopped",
+          "group": "inline@1"
+        },
+        {
+          "command": "zide.debug",
+          "when": "view == zide.servers && viewItem == serverStopped",
+          "group": "inline@2"
+        },
+        {
+          "command": "zide.stop",
+          "when": "view == zide.servers && viewItem == serverRunning",
+          "group": "inline@1"
+        },
+        {
+          "command": "zide.restart",
+          "when": "view == zide.servers && viewItem == serverRunning",
+          "group": "inline@2"
+        },
+        {
+          "command": "zide.editServer",
+          "when": "view == zide.servers",
+          "group": "1_server@1"
+        },
+        {
+          "command": "zide.removeServer",
+          "when": "view == zide.servers",
+          "group": "1_server@2"
+        },
+        {
+          "command": "zide.appLogs",
+          "when": "view == zide.servers && viewItem == serverRunning",
+          "group": "2_logs@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "ZIDE",
+      "properties": {
+        "zide.cmToolAuthToken": {
+          "type": "string",
+          "default": "",
+          "description": "CMTool API private token for project creation"
+        },
+        "zide.wgetUsername": {
+          "type": "string",
+          "default": "",
+          "description": "Username for wget authentication (build downloads)"
+        },
+        "zide.gitPath": {
+          "type": "string",
+          "default": "git",
+          "description": "Path to git executable"
+        },
+        "zide.gitUsername": {
+          "type": "string",
+          "default": "",
+          "description": "Git username for repository operations"
+        },
+        "zide.zohoRepoUsername": {
+          "type": "string",
+          "default": "",
+          "description": "Zoho repository username"
+        },
+        "zide.customBuildUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Custom build URL for remote deployment updates"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
+    "lint": "eslint src/",
+    "test": "mocha --require ts-node/register 'src/test/**/*.test.ts'",
+    "package": "vsce package --no-dependencies",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "esbuild": "^0.19.12",
+    "eslint": "^8.56.0",
+    "mocha": "^10.2.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3",
+    "@vscode/vsce": "^2.22.0"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.3.3"
+  },
+  "extensionDependencies": [],
+  "extensionPack": [],
+  "extensionRecommendations": [
+    "redhat.java",
+    "vscjava.vscode-java-debug"
+  ]
+}
