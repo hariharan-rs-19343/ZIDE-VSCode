@@ -4,11 +4,33 @@
   "description": "Tomcat server management, deploy-sync with hot-swap, deployment config patching, and new project wizard for ZIDE development",
   "version": "1.0.0",
   "publisher": "zoho",
+  "icon": "resources/zide-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zoho/zide-vscode"
+  },
+  "homepage": "https://github.com/zoho/zide-vscode#readme",
+  "bugs": {
+    "url": "https://github.com/zoho/zide-vscode/issues"
+  },
+  "author": {
+    "name": "Zoho Corporation"
+  },
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Debuggers"
+  ],
+  "keywords": [
+    "tomcat",
+    "zide",
+    "java",
+    "deploy",
+    "hot-swap",
+    "zoho"
   ],
   "activationEvents": [
     "workspaceContains:**/.zide_resources/service.xml"
