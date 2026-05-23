@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TomcatServer } from '../model/TomcatServer';
+import { TomcatServer, ServerMode } from '../model/TomcatServer';
 import { ProjectServerMapping } from '../model/ProjectServerMapping';
 import { normalizePath } from '../util/shellUtil';
 
@@ -64,6 +64,14 @@ export class StateManager {
         const server = this.getServer(id);
         if (server) {
             server.status = status;
+            await this.updateServer(server);
+        }
+    }
+
+    async updateServerMode(id: string, mode: ServerMode): Promise<void> {
+        const server = this.getServer(id);
+        if (server) {
+            server.lastMode = mode;
             await this.updateServer(server);
         }
     }

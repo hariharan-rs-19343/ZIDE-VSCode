@@ -1,0 +1,15 @@
+---
+description: Automatically build the ZIDE VSCode extension and generate VSIX after any source file changes
+globs: src/**/*.ts, package.json
+alwaysApply: false
+---
+
+# Auto Build & Package After Changes
+
+After editing any `.ts` file under `src/` or `package.json`, always run the extension build and generate the VSIX:
+
+```bash
+cd /Users/hari-19343/Zide-vscode && npm run build && npx @vscode/vsce package --no-dependencies
+```
+
+Verify both steps exit with code 0. If the build fails, fix the errors before proceeding.

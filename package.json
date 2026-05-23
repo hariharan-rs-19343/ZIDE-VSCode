@@ -140,6 +140,66 @@
         "command": "zide.localBuild",
         "title": "Local Build",
         "category": "ZIDE"
+      },
+      {
+        "command": "zide.detectGitPath",
+        "title": "Detect Git Path",
+        "category": "ZIDE"
+      },
+      {
+        "command": "zide.runHooks",
+        "title": "Run Hooks",
+        "category": "ZIDE",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "zide.runAllHooks",
+        "title": "Run All Hooks",
+        "category": "ZIDE"
+      },
+      {
+        "command": "zide.runPrecreationHook",
+        "title": "Run Precreation Hook",
+        "category": "ZIDE"
+      },
+      {
+        "command": "zide.runPostcreationHook",
+        "title": "Run Postcreation Hook",
+        "category": "ZIDE"
+      },
+      {
+        "command": "zide.runZideModuleHook",
+        "title": "Run ZideModule Hook",
+        "category": "ZIDE"
+      },
+      {
+        "command": "zide.uninstallProject",
+        "title": "Uninstall Project",
+        "category": "ZIDE",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "zide.refreshServers",
+        "title": "Refresh Servers",
+        "category": "ZIDE",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "zide.refreshAppLogs",
+        "title": "Refresh App Logs",
+        "category": "ZIDE",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "zide.checkForUpdate",
+        "title": "Check for Updates",
+        "category": "ZIDE"
+      },
+      {
+        "command": "zide.openSettings",
+        "title": "ZIDE Settings",
+        "category": "ZIDE",
+        "icon": "$(gear)"
       }
     ],
     "keybindings": [
@@ -184,12 +244,22 @@
         {
           "command": "zide.addServer",
           "when": "view == zide.servers",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "zide.refreshServers",
+          "when": "view == zide.servers",
+          "group": "navigation@2"
         },
         {
           "command": "zide.newProject",
           "when": "view == zide.servers",
-          "group": "navigation"
+          "group": "navigation@3"
+        },
+        {
+          "command": "zide.openSettings",
+          "when": "view == zide.servers",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -233,35 +303,10 @@
     "configuration": {
       "title": "ZIDE",
       "properties": {
-        "zide.cmToolAuthToken": {
-          "type": "string",
-          "default": "",
-          "description": "CMTool API private token for project creation"
-        },
-        "zide.wgetUsername": {
-          "type": "string",
-          "default": "",
-          "description": "Username for wget authentication (build downloads)"
-        },
-        "zide.gitPath": {
-          "type": "string",
-          "default": "git",
-          "description": "Path to git executable"
-        },
-        "zide.gitUsername": {
-          "type": "string",
-          "default": "",
-          "description": "Git username for repository operations"
-        },
-        "zide.zohoRepoUsername": {
-          "type": "string",
-          "default": "",
-          "description": "Zoho repository username"
-        },
-        "zide.customBuildUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Custom build URL for remote deployment updates"
+        "zide.openSettingsHint": {
+          "type": "null",
+          "order": 1,
+          "markdownDescription": "All ZIDE credentials (CMTool, Git, Wget, Zoho Repo) are managed in the [ZIDE Settings panel](command:zide.openSettings). Passwords are stored securely using VSCode SecretStorage."
         }
       }
     }

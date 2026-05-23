@@ -2,7 +2,7 @@ import * as https from 'https';
 import { SettingsManager } from '../settings/SettingsManager';
 
 const BASE_URL = 'https://cmtools.csez.zohocorpin.com/api/v1';
-const TIMEOUT_MS = 10000;
+const TIMEOUT_MS = 30000;
 
 export interface CmToolProduct {
     id: number;
@@ -14,9 +14,11 @@ export interface CmToolProduct {
 
 export class CmToolApiClient {
     static async fetchServices(): Promise<CmToolProduct[]> {
-        const token = SettingsManager.getInstance().cmToolAuthToken;
+        const settings = SettingsManager.getInstance();
+        await settings.ensureSecretsLoaded();
+        const token = settings.cmToolAuthToken;
         if (!token) {
-            throw new Error('CMTool auth token not configured. Set zide.cmToolAuthToken in settings.');
+            throw new Error('CMTool auth token not configured. Open ZIDE Settings to configure it.');
         }
 
         const url = `${BASE_URL}/products?personal=true&include_role_acccess=true`;
@@ -44,7 +46,23 @@ export class CmToolApiClient {
                         }
                         try {
                             const parsed = JSON.parse(data);
-                            const products: CmToolProduct[] = (parsed.data || parsed || []).map((item: Record<string, unknown>) => ({
+                            // Handle various API response shapes
+                            let items: Record<string, unknown>[];
+                            if (Array.isArray(parsed)) {
+                                items = parsed;
+                            } else if (Array.isArray(parsed.data)) {
+                                items = parsed.data;
+                            } else if (parsed.data && Array.isArray(parsed.data.products)) {
+                                items = parsed.data.products;
+                            } else if (Array.isArray(parsed.products)) {
+                                items = parsed.products;
+                            } else if (parsed.data && Array.isArray(parsed.data.items)) {
+                                items = parsed.data.items;
+                            } else {
+                                reject(new Error(`Unexpected CMTool response structure: ${JSON.stringify(parsed).substring(0, 200)}`));
+                                return;
+                            }
+                            const products: CmToolProduct[] = items.map((item) => ({
                                 id: item.id as number,
                                 name: (item.name || item.product_name || '') as string,
                                 repositoryUrl: (item.repository_url || item.repo_url || '') as string,
@@ -61,7 +79,7 @@ export class CmToolApiClient {
 
             req.on('timeout', () => {
                 req.destroy();
-                reject(new Error('CMTool API request timed out (10s)'));
+                reject(new Error('CMTool API request timed out (30s)'));
             });
 
             req.on('error', (e) => {

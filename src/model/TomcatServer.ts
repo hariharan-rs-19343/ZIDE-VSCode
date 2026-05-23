@@ -1,4 +1,5 @@
 export type ServerStatus = 'running' | 'stopped' | 'starting' | 'stopping';
+export type ServerMode = 'run' | 'debug';
 
 export interface TomcatServer {
     id: string;
@@ -16,4 +17,5 @@ export interface TomcatServer {
     antHome: string;
     javaHome: string;
     vmArguments: string;
+    lastMode?: ServerMode;
 }

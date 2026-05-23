@@ -53,6 +53,25 @@ export class PathResolver {
         return undefined;
     }
 
+    static readRepositoryPath(projectPath: string): string | undefined {
+        const repoPropsFile = path.join(projectPath, '.zide_resources', 'repository.properties');
+        if (fs.existsSync(repoPropsFile)) {
+            const content = fs.readFileSync(repoPropsFile, 'utf-8');
+            for (const line of content.split('\n')) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith('repositorypath=')) {
+                    const value = trimmed.substring('repositorypath='.length).trim();
+                    if (value) { return value; }
+                }
+            }
+        }
+        const zideResources = path.join(projectPath, '.zide_resources');
+        if (fs.existsSync(zideResources)) {
+            return path.resolve(path.dirname(zideResources));
+        }
+        return undefined;
+    }
+
     static findZidePropertiesFile(projectRoot: string): string | undefined {
         const candidates = [
             path.join(projectRoot, 'Zide.properties'),

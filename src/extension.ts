@@ -11,13 +11,18 @@ import { BuildCommand } from './commands/BuildCommand';
 import { UpdateDeploymentCommand } from './commands/UpdateDeploymentCommand';
 import { DeploymentPropertiesCommand } from './commands/DeploymentPropertiesCommand';
 import { ProjectCreator } from './newproject/ProjectCreator';
-import { showConfirm, showError } from './util/notificationUtil';
+import { showConfirm } from './util/notificationUtil';
+import { RunHooksCommand } from './commands/RunHooksCommand';
+import { UninstallProjectCommand } from './commands/UninstallProjectCommand';
+import { UpdateChecker } from './update/UpdateChecker';
+import { SettingsWebviewProvider } from './views/SettingsWebviewProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
     // Initialize managers
     const stateManager = StateManager.initialize(context);
-    SettingsManager.initialize(context.secrets);
+    SettingsManager.initialize(context);
     const tomcatManager = TomcatManager.getInstance();
+    const settingsWebview = new SettingsWebviewProvider(context);
 
     // Initialize tree view
     const treeProvider = new ServerTreeProvider();
@@ -126,27 +131,83 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
 
         vscode.commands.registerCommand('zide.customBuild', async () => {
-            const settings = SettingsManager.getInstance();
-            if (!settings.customBuildUrl) {
-                showError('Custom build URL not configured. Set zide.customBuildUrl in settings.');
-                return;
-            }
-            await UpdateDeploymentCommand.run();
+            await UpdateDeploymentCommand.runCustomBuild();
         }),
 
         vscode.commands.registerCommand('zide.localBuild', async () => {
-            await UpdateDeploymentCommand.run();
+            await UpdateDeploymentCommand.runLocalBuild();
+        }),
+
+        vscode.commands.registerCommand('zide.runHooks', async () => {
+            await RunHooksCommand.pickAndRun();
+        }),
+
+        vscode.commands.registerCommand('zide.runAllHooks', async () => {
+            await RunHooksCommand.runAll();
+        }),
+
+        vscode.commands.registerCommand('zide.runPrecreationHook', async () => {
+            await RunHooksCommand.runPrecreation();
+        }),
+
+        vscode.commands.registerCommand('zide.runPostcreationHook', async () => {
+            await RunHooksCommand.runPostcreation();
+        }),
+
+        vscode.commands.registerCommand('zide.runZideModuleHook', async () => {
+            await RunHooksCommand.runZideModule();
+        }),
+
+        vscode.commands.registerCommand('zide.uninstallProject', async () => {
+            await UninstallProjectCommand.run();
+            refreshTree();
+        }),
+
+        vscode.commands.registerCommand('zide.refreshServers', async () => {
+            await tomcatManager.refreshAllServerStatus();
+            refreshTree();
+        }),
+
+        vscode.commands.registerCommand('zide.refreshAppLogs', async (item?: ServerTreeItem) => {
+            const server = await resolveServer(item);
+            if (!server) { return; }
+            await tomcatManager.showAppLogs(server);
+        }),
+
+        vscode.commands.registerCommand('zide.checkForUpdate', async () => {
+            await UpdateChecker.checkManually(context);
+        }),
+
+        vscode.commands.registerCommand('zide.openSettings', async () => {
+            await settingsWebview.show();
+        }),
+
+        vscode.commands.registerCommand('zide.detectGitPath', async () => {
+            try {
+                const { execSync } = require('child_process');
+                const gitPath = execSync('which git', { encoding: 'utf-8' }).trim();
+                await context.globalState.update('zide.setting.gitPath', gitPath);
+                vscode.window.showInformationMessage(`Git path detected: ${gitPath}`);
+            } catch {
+                vscode.window.showErrorMessage('Could not detect git. Please install git or set the path manually.');
+            }
         })
     );
 
-    // Set all servers to stopped on activate (in case of crash)
-    const servers = stateManager.getServers();
-    for (const server of servers) {
-        if (server.status !== 'stopped') {
-            stateManager.updateServerStatus(server.id, 'stopped');
-        }
+    // Probe actual server status via port checks instead of blindly resetting
+    tomcatManager.refreshAllServerStatus().then(() => refreshTree());
+
+    // Check for ~/.wgetrc
+    const fs = require('fs');
+    const wgetrcPath = require('path').join(process.env['HOME'] || '', '.wgetrc');
+    if (!fs.existsSync(wgetrcPath)) {
+        vscode.window.showWarningMessage(
+            'ZIDE: ~/.wgetrc file is missing. Configure Wget credentials in Settings > ZIDE.'
+        );
     }
-    refreshTree();
+
+    // Background update check
+    UpdateChecker.checkOnActivation(context);
 }
 
 export function deactivate(): void {

@@ -47,13 +47,11 @@ export class TomcatManager {
     async startServer(server: TomcatServer, mode: 'run' | 'debug'): Promise<void> {
         const stateManager = StateManager.getInstance();
 
-        // Check if already running
         if (server.status === 'running') {
             showWarning(`Server "${server.name}" is already running`);
             return;
         }
 
-        // Check port availability
         const portFree = await isPortAvailable(server.port);
         if (!portFree) {
             const pid = await findProcessOnPort(server.port);
@@ -72,6 +70,7 @@ export class TomcatManager {
         }
 
         await stateManager.updateServerStatus(server.id, 'starting');
+        await stateManager.updateServerMode(server.id, mode);
 
         // Patch deployment configs
         try {
@@ -92,7 +91,7 @@ export class TomcatManager {
         }
 
         if (mode === 'debug') {
-            envVars['JPDA_ADDRESS'] = `${server.debugPort}`;
+            envVars['JPDA_ADDRESS'] = `*:${server.debugPort}`;
             envVars['JPDA_TRANSPORT'] = 'dt_socket';
         }
 
@@ -165,9 +164,10 @@ export class TomcatManager {
         showInfo(`Server "${server.name}" stopped`);
     }
 
-    async restartServer(server: TomcatServer, mode: 'run' | 'debug' = 'run'): Promise<void> {
+    async restartServer(server: TomcatServer, mode?: 'run' | 'debug'): Promise<void> {
+        const restartMode = mode ?? server.lastMode ?? 'run';
         await this.stopServer(server);
-        await this.startServer(server, mode);
+        await this.startServer(server, restartMode);
     }
 
     async showAppLogs(server: TomcatServer): Promise<void> {
@@ -195,6 +195,20 @@ export class TomcatManager {
         this.appLogsChannel.clear();
         this.appLogsChannel.append(last5000);
         this.appLogsChannel.show(true);
+    }
+
+    async refreshAllServerStatus(): Promise<void> {
+        const stateManager = StateManager.getInstance();
+        const servers = stateManager.getServers();
+        for (const server of servers) {
+            const portInUse = !(await isPortAvailable(server.port));
+            const expectedRunning = portInUse;
+            if (expectedRunning && server.status === 'stopped') {
+                await stateManager.updateServerStatus(server.id, 'running');
+            } else if (!expectedRunning && server.status !== 'stopped') {
+                await stateManager.updateServerStatus(server.id, 'stopped');
+            }
+        }
     }
 
     private async attachDebugger(server: TomcatServer): Promise<void> {

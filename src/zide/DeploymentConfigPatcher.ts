@@ -85,35 +85,126 @@ export class DeploymentConfigPatcher {
         const configPath = path.join(server.deploymentDir, 'WEB-INF', 'conf', 'configuration.properties');
         if (!fs.existsSync(configPath)) { return; }
 
-        // Configuration properties are patched on-demand via DeploymentPropertiesCommand
-        // This ensures the file exists and is accessible
+        const zidePropsPath = path.join(server.zideResourcesPath, 'zide_properties.xml');
+        if (!fs.existsSync(zidePropsPath)) { return; }
+
+        const propsContent = fs.readFileSync(zidePropsPath, 'utf-8');
+        const extract = (key: string): string | undefined => {
+            const match = propsContent.match(new RegExp(`name="${key}"\\s+value="([^"]*)"`));
+            return match?.[1];
+        };
+
+        const dbType = extract('ZIDE_DB_TYPE') || extract('db.type') || '';
+        const isPgsql = dbType.toUpperCase() === 'PGSQL' || dbType.toUpperCase() === 'POSTGRESQL';
+
+        const replacements: Record<string, string> = isPgsql ? {
+            'db.drivername': 'org.postgresql.Driver',
+            'db.username': extract('ZIDE_DB_USER') || extract('db.user') || 'root',
+            'db.password': extract('ZIDE_DB_PASS') || extract('db.password') || '',
+            'db.url': 'jdbc:postgresql://$host:$port/$dbName?charSet=UNICODE',
+            'db.port': '5432',
+            'db.schemaname': extract('ZIDE.SCHEMA_NAME') || extract('db.schema') || 'jbossdb',
+            'db.name': extract('ZIDE_DB_NAME') || extract('db.name') || 'postgres',
+            'db.vendor.name': 'postgres',
+            'sas.dbserver.name': 'POSTGRES'
+        } : {
+            'db.drivername': 'org.gjt.mm.mysql.Driver',
+            'db.username': extract('ZIDE_DB_USER') || extract('db.user') || 'root',
+            'db.password': extract('ZIDE_DB_PASS') || extract('db.password') || '',
+            'db.url': 'jdbc:mysql://$host:$port/$dbName?',
+            'db.port': '3306',
+            'db.schemaname': extract('ZIDE.SCHEMA_NAME') || extract('db.schema') || 'jbossdb',
+            'db.name': 'mysql',
+            'db.vendor.name': 'mysql',
+            'sas.dbserver.name': 'MYSQL'
+        };
+
+        for (const [key, value] of Object.entries(replacements)) {
+            this.patchConfigProperty(configPath, key, value);
+        }
     }
 
     static async patchPersistenceConfigurations(server: TomcatServer): Promise<void> {
         if (!server.deploymentDir) { return; }
 
-        const persistencePath = path.join(server.deploymentDir, 'WEB-INF', 'conf', 'persistence-configurations.xml');
-        if (!fs.existsSync(persistencePath)) { return; }
+        const persistencePath = path.join(server.deploymentDir, 'WEB-INF', 'conf', 'Persistence', 'persistence-configurations.xml');
+        const altPath = path.join(server.deploymentDir, 'WEB-INF', 'conf', 'persistence-configurations.xml');
+        const actualPath = fs.existsSync(persistencePath) ? persistencePath : altPath;
+        if (!fs.existsSync(actualPath)) { return; }
 
-        let content = fs.readFileSync(persistencePath, 'utf-8');
+        let content = fs.readFileSync(actualPath, 'utf-8');
 
-        // Set StartDBServer=false
         content = content.replace(
-            /(<property\s+name="StartDBServer"\s+value=")[^"]*(")/g,
+            /(<configuration\s+name="StartDBServer"\s+value=")[^"]*(")/g,
             '$1false$2'
         );
 
-        fs.writeFileSync(persistencePath, content, 'utf-8');
+        const zidePropsPath = path.join(server.zideResourcesPath, 'zide_properties.xml');
+        if (fs.existsSync(zidePropsPath)) {
+            const propsContent = fs.readFileSync(zidePropsPath, 'utf-8');
+            const dbType = propsContent.match(/name="(?:ZIDE_DB_TYPE|db\.type)"\s+value="([^"]*)"/)?.[1] || '';
+            const isPgsql = dbType.toUpperCase() === 'PGSQL' || dbType.toUpperCase() === 'POSTGRESQL';
+
+            const dbNameValue = isPgsql ? 'postgres' : 'mysql';
+            content = content.replace(
+                /(<configuration\s+name="DBName"\s+value=")[^"]*(")/g,
+                `$1${dbNameValue}$2`
+            );
+
+            const dsAdapterValue = isPgsql ? 'saspg' : 'sas';
+            content = content.replace(
+                /(<configuration\s+name="DSAdapter"\s+value=")[^"]*(")/,
+                `$1${dsAdapterValue}$2`
+            );
+        }
+
+        fs.writeFileSync(actualPath, content, 'utf-8');
     }
 
     static async patchSecurityProperties(server: TomcatServer): Promise<void> {
         if (!server.deploymentDir) { return; }
 
-        const securityPath = path.join(server.deploymentDir, 'WEB-INF', 'conf', 'security-properties.xml');
+        const securityPath = path.join(server.deploymentDir, 'WEB-INF', 'security-properties.xml');
         if (!fs.existsSync(securityPath)) { return; }
 
-        // Security properties are patched based on deployment properties (IAM server, service name, etc.)
-        // Actual values come from the Deployment Properties command
+        const zidePropsPath = path.join(server.zideResourcesPath, 'zide_properties.xml');
+        if (!fs.existsSync(zidePropsPath)) { return; }
+
+        const propsContent = fs.readFileSync(zidePropsPath, 'utf-8');
+        const extract = (key: string): string | undefined => {
+            const match = propsContent.match(new RegExp(`name="${key}"\\s+value="([^"]*)"`));
+            return match?.[1];
+        };
+
+        let content = fs.readFileSync(securityPath, 'utf-8');
+        let modified = false;
+
+        const iamServer = extract('ZIDE.IAM_SERVER') || extract('iam.server');
+        if (iamServer) {
+            const iamRegex = /(<property\s+name="com\.adventnet\.iam\.internal\.server"\s+value=")[^"]*(")/g;
+            const newContent = content.replace(iamRegex, `$1${iamServer}$2`);
+            if (newContent !== content) { content = newContent; modified = true; }
+        }
+
+        const serviceName = extract('ZIDE.IAM_SERVICENAME') || extract('iam.service.name');
+        if (serviceName) {
+            const serviceRegex = /(<property\s+name="service\.name"\s+value=")[^"]*(")/g;
+            const newContent = content.replace(serviceRegex, `$1${serviceName}$2`);
+            if (newContent !== content) { content = newContent; modified = true; }
+        }
+
+        const hostName = extract('ZIDE.HOST_NAME') || extract('host.name');
+        const httpsPort = extract('ZIDE.HTTPS_PORT') || extract('https.port');
+        if (hostName && httpsPort && serviceName) {
+            const logoutUrl = `https://${hostName}:${httpsPort}/logout?servicename=${serviceName}`;
+            const logoutRegex = /(<property\s+name="logout\.page"\s+value=")[^"]*(")/g;
+            const newContent = content.replace(logoutRegex, `$1${logoutUrl}$2`);
+            if (newContent !== content) { content = newContent; modified = true; }
+        }
+
+        if (modified) {
+            fs.writeFileSync(securityPath, content, 'utf-8');
+        }
     }
 
     static patchConfigProperty(filePath: string, key: string, value: string): void {
