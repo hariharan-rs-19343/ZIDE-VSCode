@@ -1,11 +1,15 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import { CmToolApiClient, CmToolProduct } from './CmToolApiClient';
 import { SettingsManager } from '../settings/SettingsManager';
 import { AntResolver } from '../deploysync/AntResolver';
 import { runCommand } from '../util/processUtil';
 import { showError, showInfo } from '../util/notificationUtil';
+import { PathResolver } from '../parser/PathResolver';
+import { ZideConfigParser } from '../parser/ZideConfigParser';
+import { DeploymentConfigPatcher } from '../zide/DeploymentConfigPatcher';
 
 export class ProjectCreator {
     static async run(): Promise<void> {
@@ -22,6 +26,8 @@ export class ProjectCreator {
                 } catch (e) {
                     if (e instanceof Error && e.message === 'cancelled') { return; }
                     showError(`Project creation failed: ${e}`);
+                    // Rollback: clean up partially created project and deployment
+                    await this.rollback(progress);
                 }
             }
         );
@@ -33,15 +39,80 @@ export class ProjectCreator {
         }
     }
 
+    /** Track created paths for rollback on failure */
+    private static lastProjectDir: string | undefined;
+    private static lastDeploymentDir: string | undefined;
+    private static lastBuildZipPath: string | undefined;
+
+    private static async rollback(progress: vscode.Progress<{ message?: string; increment?: number }>): Promise<void> {
+        progress.report({ message: 'Rolling back...' });
+        try {
+            if (this.lastBuildZipPath && fs.existsSync(this.lastBuildZipPath)) {
+                fs.unlinkSync(this.lastBuildZipPath);
+            }
+            if (this.lastDeploymentDir && fs.existsSync(this.lastDeploymentDir)) {
+                fs.rmSync(this.lastDeploymentDir, { recursive: true, force: true });
+            }
+            if (this.lastProjectDir && fs.existsSync(this.lastProjectDir)) {
+                fs.rmSync(this.lastProjectDir, { recursive: true, force: true });
+            }
+        } catch { /* best-effort cleanup */ }
+        this.lastProjectDir = undefined;
+        this.lastDeploymentDir = undefined;
+        this.lastBuildZipPath = undefined;
+    }
+
+    /**
+     * Append ZIDE standard patterns to .gitignore (mirrors Eclipse's auto-entries).
+     */
+    private static appendGitIgnoreEntries(projectDir: string): void {
+        const gitignorePath = path.join(projectDir, '.gitignore');
+        const zideEntries = [
+            '',
+            '# ZIDE',
+            '.zide_resources/zide_build/buildlogs/',
+            '.zide_resources/zide_build/lib/',
+            '.zide_resources/zide_hook/lib/',
+            '*.class',
+            '*.war',
+            '*.ear',
+            'deployment/',
+            '.zide_resources/zide_properties.xml'
+        ].join('\n') + '\n';
+
+        try {
+            if (fs.existsSync(gitignorePath)) {
+                const existing = fs.readFileSync(gitignorePath, 'utf-8');
+                if (!existing.includes('# ZIDE')) {
+                    fs.appendFileSync(gitignorePath, zideEntries);
+                }
+            } else {
+                fs.writeFileSync(gitignorePath, zideEntries.trimStart());
+            }
+        } catch { /* non-fatal */ }
+    }
+
     private static resolveHostName(): string {
         const csezDomain = '.csez.zohocorpin.com';
         try {
-            const { execSync } = require('child_process');
             const hostname = execSync('hostname', { encoding: 'utf-8' }).trim();
             return hostname.endsWith(csezDomain) ? hostname : `${hostname}${csezDomain}`;
         } catch {
             return `localhost${csezDomain}`;
         }
+    }
+
+    private static async detectTomcatVersion(tomcatDir: string): Promise<string> {
+        const catalinaJar = path.join(tomcatDir, 'lib', 'catalina.jar');
+        if (!fs.existsSync(catalinaJar)) { return ''; }
+        try {
+            const result = await runCommand(`unzip -p "${catalinaJar}" "org/apache/catalina/util/ServerInfo.properties" 2>/dev/null`);
+            if (result.exitCode === 0 && result.stdout) {
+                const match = result.stdout.match(/server\.number=(.+)/);
+                return match?.[1]?.trim() || '';
+            }
+        } catch { /* ignore */ }
+        return '';
     }
 
     private static async collectDeploymentProperties(projectDir: string): Promise<void> {
@@ -141,21 +212,18 @@ export class ProjectCreator {
 
         const dbTypeValue = dbType === 'PostgreSQL' ? 'PGSQL' : 'MYSQL';
 
-        // Save using IntelliJ-compatible XML structure
-        const propsContent = `<?xml version="1.0" encoding="UTF-8"?><zide><services><service key="${serviceKey}"><properties><property name="ZIDE.HOST_NAME" value="${hostName}"/><property name="ZIDE.USER_MAIL" value="${userMail}"/><property name="ZIDE.IAM_SERVER" value="${iamServer}"/><property name="ZIDE.HTTP_PORT" value="${httpPort}"/><property name="ZIDE.HTTPS_PORT" value="${httpsPort}"/><property name="ZIDE.IAM_SERVICENAME" value="${iamServiceName}"/><property name="ZIDE.USER_NAME" value="${userName}"/><property name="ZIDE.MACHINE_IP" value="${hostName}"/><property name="ZIDE_DB_TYPE" value="${dbTypeValue}"/><property name="ZIDE_DB_HOST" value="${dbHost}"/><property name="ZIDE_DB_USER" value="${dbUser}"/><property name="ZIDE_DB_PASS" value="${dbPassword}"/><property name="ZIDE_DB_NAME" value="${dbName}"/><property name="ZIDE.SCHEMA_NAME" value="${dbSchema}"/></properties></service></services></zide>`;
+        // Save using IntelliJ-compatible XML structure (no <zide> wrapper, no <properties> wrapper)
+        const propsContent = `<?xml version="1.0" encoding="UTF-8"?><services><service key="${serviceKey}"><property name="ZIDE.HOST_NAME" value="${hostName}"/><property name="ZIDE.USER_MAIL" value="${userMail}"/><property name="ZIDE.IAM_SERVER" value="${iamServer}"/><property name="ZIDE.HTTP_PORT" value="${httpPort}"/><property name="ZIDE.HTTPS_PORT" value="${httpsPort}"/><property name="ZIDE.IAM_SERVICENAME" value="${iamServiceName}"/><property name="ZIDE.USER_NAME" value="${userName}"/><property name="ZIDE.MACHINE_IP" value="${hostName}"/><property name="ZIDE_DB_TYPE" value="${dbTypeValue}"/><property name="ZIDE_DB_HOST" value="${dbHost}"/><property name="ZIDE_DB_USER" value="${dbUser}"/><property name="ZIDE_DB_PASS" value="${dbPassword}"/><property name="ZIDE_DB_NAME" value="${dbName}"/><property name="ZIDE.SCHEMA_NAME" value="${dbSchema}"/></service></services>`;
         fs.writeFileSync(propsFile, propsContent, 'utf-8');
     }
 
     private static async runPostPropertiesHooksAndPatch(projectDir: string): Promise<void> {
-        const { PathResolver } = require('../parser/PathResolver');
-        const { ZideConfigParser } = require('../parser/ZideConfigParser');
-        const { DeploymentConfigPatcher } = require('../zide/DeploymentConfigPatcher');
 
         const zideResourcesPath = PathResolver.resolveZideResourcesPath(projectDir);
         if (!zideResourcesPath) { return; }
 
         const services = ZideConfigParser.parseServiceXml(path.join(zideResourcesPath, 'service.xml'));
-        const serviceName = services[0]?.name || path.basename(projectDir);
+        const serviceName = services[0]?.properties['ZIDE.PARENT_SERVICE'] || services[0]?.name || path.basename(projectDir);
 
         const serviceContent = fs.existsSync(path.join(zideResourcesPath, 'service.xml'))
             ? fs.readFileSync(path.join(zideResourcesPath, 'service.xml'), 'utf-8') : '';
@@ -206,12 +274,13 @@ export class ProjectCreator {
 
                 const tomcatPath = path.join(deploymentFolder, 'AdventNet', 'Sas', 'tomcat');
                 const serverPath = fs.existsSync(tomcatPath) ? tomcatPath : deploymentFolder;
+                const webappDir = path.join(serverPath, 'webapps', serviceName);
 
                 const tempServer = {
                     id: '', name: serviceName, path: serverPath,
                     status: 'stopped' as const, port: parseInt(extract('ZIDE.HTTP_PORT') || '8080', 10),
                     debugPort: 8787, shutdownPort: 9285, contextPath: `/${serviceName}`,
-                    deploymentDir: deploymentFolder, zideResourcesPath, zidePropertiesPath: zidePropsPath,
+                    deploymentDir: webappDir, zideResourcesPath, zidePropertiesPath: zidePropsPath,
                     serviceName, antHome: '', javaHome: '', vmArguments: ''
                 };
                 await DeploymentConfigPatcher.patchAll(tempServer);
@@ -290,7 +359,20 @@ export class ProjectCreator {
         );
         if (!selectedService || token.isCancellationRequested) { throw new Error('cancelled'); }
 
-        // Step 3: Ask user Remote / Local Build
+        // Step 3: Choose JDK version
+        progress.report({ message: 'Select JDK...', increment: 5 });
+        const jdkList = this.detectInstalledJdks();
+        if (jdkList.length === 0) {
+            showError('No JDK installations found on this system');
+            throw new Error('cancelled');
+        }
+        const selectedJdk = await vscode.window.showQuickPick(
+            jdkList.map(j => ({ label: j.version, description: j.path, detail: j.vendor, jdkPath: j.path })),
+            { placeHolder: 'Select JDK version' }
+        );
+        if (!selectedJdk || token.isCancellationRequested) { throw new Error('cancelled'); }
+
+        // Step 4: Ask user Remote / Local Build
         const buildSource = await vscode.window.showQuickPick(
             [
                 { label: 'Remote', description: 'Download build from URL' },
@@ -375,6 +457,13 @@ export class ProjectCreator {
             throw new Error('cancelled');
         }
 
+        // Append ZIDE standard entries to .gitignore
+        this.appendGitIgnoreEntries(projectDir);
+
+        // Track for rollback from this point forward
+        this.lastProjectDir = projectDir;
+        this.lastBuildZipPath = buildSource.label === 'Remote' ? buildZipPath : undefined;
+
         // Step 8: Create .zide_resources
         progress.report({ message: 'Setting up ZIDE resources...', increment: 5 });
         const zideResourcesDir = path.join(projectDir, '.zide_resources');
@@ -382,10 +471,12 @@ export class ProjectCreator {
             fs.mkdirSync(zideResourcesDir, { recursive: true });
         }
 
-        // Create service.xml (IntelliJ-compatible format: <zide><services><service key><properties>)
+        // Create service.xml (IntelliJ-compatible format: <services><service key><property> — no <zide> wrapper, no <properties> wrapper)
         const serviceKey = selectedService.product.serviceName || projectName.trim();
         const deploymentBaseDir = path.join(baseDir, 'deployment', projectName.trim());
-        const serviceXmlContent = `<?xml version="1.0" encoding="UTF-8"?><zide><services><service key="${projectName.trim()}"><properties><property name="ZIDE.REPOSITORY_TRUNK" value="${branch}"/><property name="ZIDE.SSH_USERNAME" value="${process.env['USER'] || ''}"/><property name="ZIDE.REPOSITORY_MODULE_DIR" value="${serviceKey}"/><property name="ZIDE.DOWNLOAD_URL" value="${selectedService.product.downloadUrl || ''}"/><property name="ZIDE.LOCAL_DOWNLOAD_URL" value=""/><property name="ZIDE.PARENT_SERVICE" value="${projectName.trim()}"/><property name="ZIDE.DEPLOYMENT_FOLDER" value="${deploymentBaseDir}"/><property name="ZIDE.DEPEND_SERVICES" value=""/><property name="ZIDE.RUNNABLE_SERVICES" value=""/><property name="ZIDE.SUBMODULES" value=""/><property name="ZIDE.SERVICE_KEY" value="${serviceKey.toUpperCase()}"/><property name="ZIDE.COLD_START" value="true"/><property name="ZIDE.DO_REPLACE" value="false"/><property name="ZIDE.PERMISSION" value="1"/><property name="ZIDE.SOURCES" value="src/main/java"/><property name="ZIDE.REPO_TYPE" value="2"/><property name="ZIDE.DEPLOY_TYPE" value="M19"/><property name="ZIDE.MI_DEPLOYMENT" value="false"/><property name="ZIDE.TOMCAT_VERSION" value=""/><property name="ZIDE.PROJECT_JRE_HOME" value=""/></properties></service></services></zide>`;
+        this.lastDeploymentDir = deploymentBaseDir;
+        const jreHome = selectedJdk.jdkPath;
+        const serviceXmlContent = `<?xml version="1.0" encoding="UTF-8"?><services><service key="ROOT"><property name="ZIDE.REPOSITORY_TRUNK" value="${branch}"/><property name="ZIDE.SSH_USERNAME" value="${process.env['USER'] || ''}"/><property name="ZIDE.REPOSITORY_MODULE_DIR" value="${serviceKey.toUpperCase()}"/><property name="ZIDE.DOWNLOAD_URL" value="${selectedService.product.downloadUrl || ''}"/><property name="ZIDE.LOCAL_DOWNLOAD_URL" value=""/><property name="ZIDE.PARENT_SERVICE" value="${projectName.trim()}"/><property name="ZIDE.DEPLOYMENT_FOLDER" value="${deploymentBaseDir}"/><property name="ZIDE.DEPEND_SERVICES" value=""/><property name="ZIDE.RUNNABLE_SERVICES" value=""/><property name="ZIDE.SUBMODULES" value=""/><property name="ZIDE.SERVICE_KEY" value="${serviceKey.toUpperCase()}"/><property name="ZIDE.COLD_START" value="true"/><property name="ZIDE.DO_REPLACE" value="false"/><property name="ZIDE.PERMISSION" value="1"/><property name="ZIDE.SOURCES" value="src/main/java"/><property name="ZIDE.REPO_TYPE" value="2"/><property name="ZIDE.DEPLOY_TYPE" value="M19"/><property name="ZIDE.MI_DEPLOYMENT" value="false"/><property name="ZIDE.TOMCAT_VERSION" value=""/><property name="ZIDE.PROJECT_JRE_HOME" value="${jreHome}"/></service></services>`;
         fs.writeFileSync(path.join(zideResourcesDir, 'service.xml'), serviceXmlContent, 'utf-8');
 
         // Create zide_properties.xml (IntelliJ-compatible format, only if not already present)
@@ -393,7 +484,7 @@ export class ProjectCreator {
         if (!fs.existsSync(zidePropsFile)) {
             const hostname = this.resolveHostName();
             const userName = process.env['USER'] || '';
-            const propsXmlContent = `<?xml version="1.0" encoding="UTF-8"?><zide><services><service key="${serviceKey.toUpperCase()}"><properties><property name="ZIDE.HOST_NAME" value="${hostname}"/><property name="ZIDE.HTTP_PORT" value="8080"/><property name="ZIDE.HTTPS_PORT" value="8443"/><property name="ZIDE.IAM_SERVER" value="https://accounts.csez.zohocorpin.com"/><property name="ZIDE.IAM_SERVICENAME" value="${serviceKey.toUpperCase()}"/><property name="ZIDE.USER_NAME" value="${userName}"/><property name="ZIDE.USER_MAIL" value="${userName}@zohocorp.com"/><property name="ZIDE.MACHINE_IP" value="${hostname}"/><property name="ZIDE_DB_TYPE" value="PGSQL"/><property name="ZIDE_DB_USER" value="root"/><property name="ZIDE_DB_PASS" value=""/><property name="ZIDE_DB_HOST" value="localhost"/><property name="ZIDE_DB_NAME" value=""/><property name="ZIDE.SCHEMA_NAME" value="jbossdb"/></properties></service></services></zide>`;
+            const propsXmlContent = `<?xml version="1.0" encoding="UTF-8"?><services><service key="${serviceKey.toUpperCase()}"><property name="ZIDE.HOST_NAME" value="${hostname}"/><property name="ZIDE.HTTP_PORT" value="8080"/><property name="ZIDE.HTTPS_PORT" value="8443"/><property name="ZIDE.IAM_SERVER" value="https://accounts.csez.zohocorpin.com"/><property name="ZIDE.IAM_SERVICENAME" value="${serviceKey.toUpperCase()}"/><property name="ZIDE.USER_NAME" value="${userName}"/><property name="ZIDE.USER_MAIL" value="${userName}@zohocorp.com"/><property name="ZIDE.MACHINE_IP" value="${hostname}"/><property name="ZIDE_DB_TYPE" value="PGSQL"/><property name="ZIDE_DB_USER" value="root"/><property name="ZIDE_DB_PASS" value=""/><property name="ZIDE_DB_HOST" value="localhost"/><property name="ZIDE_DB_NAME" value=""/><property name="ZIDE.SCHEMA_NAME" value="jbossdb"/></service></services>`;
             fs.writeFileSync(zidePropsFile, propsXmlContent, 'utf-8');
         }
 
@@ -408,6 +499,19 @@ export class ProjectCreator {
         }
 
         const tomcatDir = path.join(deploymentBaseDir, 'AdventNet', 'Sas', 'tomcat');
+
+        // Detect Tomcat version and update service.xml
+        const tomcatVersion = await this.detectTomcatVersion(tomcatDir);
+        if (tomcatVersion) {
+            const serviceXmlPath = path.join(zideResourcesDir, 'service.xml');
+            let svcContent = fs.readFileSync(serviceXmlPath, 'utf-8');
+            svcContent = svcContent.replace(
+                /name="ZIDE\.TOMCAT_VERSION"\s+value="[^"]*"/,
+                `name="ZIDE.TOMCAT_VERSION" value="${tomcatVersion}"`
+            );
+            fs.writeFileSync(serviceXmlPath, svcContent, 'utf-8');
+        }
+
         const webappsDir = fs.existsSync(path.join(tomcatDir, 'webapps'))
             ? path.join(tomcatDir, 'webapps')
             : path.join(deploymentBaseDir, 'webapps');
@@ -418,10 +522,15 @@ export class ProjectCreator {
             for (const war of warFiles) {
                 const warPath = path.join(webappsDir, war);
                 const warName = war.replace('.war', '');
-                const targetName = warName === 'ROOT' ? selectedService.product.serviceName : warName;
+                const targetName = warName === 'ROOT' ? projectName.trim() : warName;
                 const warDir = path.join(webappsDir, targetName);
                 fs.mkdirSync(warDir, { recursive: true });
                 await runCommand(`unzip -o "${warPath}" -d "${warDir}"`);
+            }
+            // Delete .war files after extraction (matching IntelliJ step 4/6)
+            for (const war of warFiles) {
+                const warPath = path.join(webappsDir, war);
+                if (fs.existsSync(warPath)) { fs.unlinkSync(warPath); }
             }
         }
 
@@ -440,7 +549,7 @@ export class ProjectCreator {
             const hookProps: Record<string, string> = {
                 'REPOSITORY_PATH': projectDir,
                 'DEPLOYMENT_PATH': fs.existsSync(tomcatDir) ? tomcatDir : deploymentBaseDir,
-                'ZIDE.PARENT_SERVICE': selectedService.product.serviceName
+                'ZIDE.PARENT_SERVICE': projectName.trim()
             };
 
             const zideHookBuildXml = path.join(zideResourcesDir, 'zide_hook', 'build.xml');
@@ -471,6 +580,11 @@ export class ProjectCreator {
             fs.unlinkSync(buildZipPath);
         }
 
+        // Success — clear rollback tracking
+        this.lastProjectDir = undefined;
+        this.lastDeploymentDir = undefined;
+        this.lastBuildZipPath = undefined;
+
         return projectDir;
     }
 
@@ -494,6 +608,8 @@ export class ProjectCreator {
         if (hgUtilsSource) {
             this.copySharedBuildFiles(hgUtilsSource, zideBuildDir);
             this.copySharedBuildFiles(hgUtilsSource, zideHookDir);
+            this.copyServiceAntProperties(workspaceDir, projectDir, serviceName, zideBuildDir);
+            this.copyCommonAntProperties(workspaceDir, projectDir, zideHookDir);
         } else {
             this.generateStubBuildStructure(zideBuildDir, zideHookDir, serviceName, projectDir, deploymentDir);
         }
@@ -520,6 +636,72 @@ export class ProjectCreator {
         }
 
         return undefined;
+    }
+
+    private static copyServiceAntProperties(workspaceDir: string, projectDir: string, serviceName: string, targetDir: string): void {
+        const targetFile = path.join(targetDir, 'ant.properties');
+        if (fs.existsSync(targetFile)) { return; }
+
+        // Check sibling projects first
+        const parent = path.dirname(projectDir);
+        try {
+            const siblings = fs.readdirSync(parent, { withFileTypes: true });
+            for (const sibling of siblings) {
+                if (!sibling.isDirectory() || sibling.name === path.basename(projectDir)) { continue; }
+                const candidate = path.join(parent, sibling.name, '.zide_resources', 'zide_build', 'ant.properties');
+                if (fs.existsSync(candidate)) {
+                    fs.copyFileSync(candidate, targetFile);
+                    return;
+                }
+            }
+        } catch { /* ignore */ }
+
+        // Check workspace zide/deployment paths
+        const moduleDir = serviceName;
+        const candidates = [
+            path.join(workspaceDir, 'zide', 'deployment', moduleDir, 'M19', 'zide_ant.properties'),
+            path.join(workspaceDir, 'zide', 'deployment', `${moduleDir}_cloud`, 'M19', 'zide_ant.properties'),
+            path.join(workspaceDir, 'zide', 'deployment', moduleDir, 'zide_ant.properties')
+        ];
+
+        for (const candidate of candidates) {
+            if (fs.existsSync(candidate)) {
+                fs.copyFileSync(candidate, targetFile);
+                return;
+            }
+        }
+    }
+
+    private static copyCommonAntProperties(workspaceDir: string, projectDir: string, targetDir: string): void {
+        const targetFile = path.join(targetDir, 'ant.properties');
+        if (fs.existsSync(targetFile)) { return; }
+
+        // Check sibling projects first
+        const parent = path.dirname(projectDir);
+        try {
+            const siblings = fs.readdirSync(parent, { withFileTypes: true });
+            for (const sibling of siblings) {
+                if (!sibling.isDirectory() || sibling.name === path.basename(projectDir)) { continue; }
+                const candidate = path.join(parent, sibling.name, '.zide_resources', 'zide_hook', 'ant.properties');
+                if (fs.existsSync(candidate)) {
+                    fs.copyFileSync(candidate, targetFile);
+                    return;
+                }
+            }
+        } catch { /* ignore */ }
+
+        // Check workspace zide/deployment paths
+        const candidates = [
+            path.join(workspaceDir, 'zide', 'deployment', 'zide', 'zide_ant.properties'),
+            path.join(workspaceDir, 'zide', 'deployment', 'cide_common_tasks', 'M19', 'zide_ant.properties')
+        ];
+
+        for (const candidate of candidates) {
+            if (fs.existsSync(candidate)) {
+                fs.copyFileSync(candidate, targetFile);
+                return;
+            }
+        }
     }
 
     private static copySharedBuildFiles(source: string, targetDir: string): void {
@@ -627,5 +809,46 @@ export class ProjectCreator {
 `, 'utf-8');
         }
         fs.mkdirSync(path.join(zideHookDir, 'buildlogs'), { recursive: true });
+    }
+
+    private static detectInstalledJdks(): Array<{ version: string; path: string; vendor: string }> {
+        const jdks: Array<{ version: string; path: string; vendor: string }> = [];
+
+        try {
+            // macOS: use /usr/libexec/java_home -V
+            const output = execSync('/usr/libexec/java_home -V 2>&1', { encoding: 'utf-8' });
+            const lines = output.split('\n');
+            for (const line of lines) {
+                // Match lines like: 17.0.18 (arm64) "Homebrew" - "OpenJDK 17.0.18" /opt/homebrew/...
+                const match = line.match(/^\s+([\d._]+)\s+\([^)]+\)\s+"([^"]+)"\s+-\s+"([^"]+)"\s+(.+)$/);
+                if (match) {
+                    jdks.push({
+                        version: match[3],
+                        vendor: match[2],
+                        path: match[4].trim()
+                    });
+                }
+            }
+        } catch {
+            // Fallback: check common JDK locations
+            const jvmDir = '/Library/Java/JavaVirtualMachines';
+            if (fs.existsSync(jvmDir)) {
+                const entries = fs.readdirSync(jvmDir);
+                for (const entry of entries) {
+                    const homePath = path.join(jvmDir, entry, 'Contents', 'Home');
+                    if (fs.existsSync(homePath)) {
+                        jdks.push({ version: entry, path: homePath, vendor: '' });
+                    }
+                }
+            }
+        }
+
+        // Also check JAVA_HOME
+        const javaHome = process.env['JAVA_HOME'];
+        if (javaHome && fs.existsSync(javaHome) && !jdks.some(j => j.path === javaHome)) {
+            jdks.unshift({ version: `JAVA_HOME (${path.basename(javaHome)})`, path: javaHome, vendor: 'Environment' });
+        }
+
+        return jdks;
     }
 }

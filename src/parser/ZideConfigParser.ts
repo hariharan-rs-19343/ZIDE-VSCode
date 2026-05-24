@@ -37,7 +37,12 @@ export class ZideConfigParser {
         const parsed = this.parser.parse(content);
 
         const services: ZideService[] = [];
-        const root = parsed.services || parsed.service || parsed;
+
+        // Handle multiple XML structures:
+        // 1. <zide><services><service>...</service></services></zide>
+        // 2. <services><service>...</service></services>
+        // 3. <service>...</service>
+        const root = parsed.zide?.services || parsed.services || parsed.service || parsed;
         let serviceNodes = root?.service || root?.services?.service;
 
         if (!serviceNodes) { return []; }
@@ -45,10 +50,11 @@ export class ZideConfigParser {
 
         for (const node of serviceNodes) {
             const service: ZideService = {
-                name: node['@_name'] || node.name || '',
+                name: node['@_name'] || node['@_key'] || node.name || '',
                 properties: {}
             };
 
+            // Properties may be directly on the node or nested in <properties>
             let propNodes = node.property || node.properties?.property;
             if (propNodes) {
                 if (!Array.isArray(propNodes)) { propNodes = [propNodes]; }
@@ -76,8 +82,20 @@ export class ZideConfigParser {
         const parsed = this.parser.parse(content);
 
         const props: ZideEnvironmentProps = {};
-        const root = parsed.properties || parsed.zide_properties || parsed;
-        let propNodes = root?.property || root?.entry;
+
+        // Handle: <zide><services><service><properties><property/></properties></service></services></zide>
+        // Or:     <properties><property/></properties>
+        // Or:     <services><service><property/></service></services>
+        const zideRoot = parsed.zide?.services?.service || parsed.services?.service;
+        let propNodes: any;
+
+        if (zideRoot) {
+            const svc = Array.isArray(zideRoot) ? zideRoot[0] : zideRoot;
+            propNodes = svc?.properties?.property || svc?.property;
+        } else {
+            const root = parsed.properties || parsed.zide_properties || parsed;
+            propNodes = root?.property || root?.entry;
+        }
 
         if (!propNodes) { return props; }
         if (!Array.isArray(propNodes)) { propNodes = [propNodes]; }

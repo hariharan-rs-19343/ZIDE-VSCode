@@ -130,6 +130,13 @@ export function activate(context: vscode.ExtensionContext): void {
             await tomcatManager.showAppLogs(server);
         }),
 
+        // WAR redeploy command (from old extension)
+        vscode.commands.registerCommand('zide.redeployServer', async (item?: ServerTreeItem) => {
+            const server = await resolveServer(item);
+            if (!server) { return; }
+            await tomcatManager.redeployWar(server);
+        }),
+
         vscode.commands.registerCommand('zide.customBuild', async () => {
             await UpdateDeploymentCommand.runCustomBuild();
         }),

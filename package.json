@@ -108,6 +108,12 @@
         "icon": "$(trash)"
       },
       {
+        "command": "zide.redeployServer",
+        "title": "Redeploy WAR",
+        "category": "ZIDE",
+        "icon": "$(rocket)"
+      },
+      {
         "command": "zide.newProject",
         "title": "New Project",
         "category": "ZIDE",
@@ -282,6 +288,11 @@
           "command": "zide.restart",
           "when": "view == zide.servers && viewItem == serverRunning",
           "group": "inline@2"
+        },
+        {
+          "command": "zide.redeployServer",
+          "when": "view == zide.servers && viewItem == serverRunning",
+          "group": "inline@3"
         },
         {
           "command": "zide.editServer",

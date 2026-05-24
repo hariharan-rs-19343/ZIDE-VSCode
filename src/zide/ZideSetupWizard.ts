@@ -1,11 +1,60 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { TomcatServer } from '../model/TomcatServer';
 import { StateManager } from '../persistence/StateManager';
 import { PathResolver } from '../parser/PathResolver';
 import { ZideConfigParser, ZideService } from '../parser/ZideConfigParser';
 import { ModuleZidePropsParser } from '../parser/ModuleZidePropsParser';
+
+/**
+ * Detect if ZIDE configuration exists in the given project path (from old extension).
+ */
+export async function detectZideConfigInProject(projectPath: string): Promise<boolean> {
+    const zideResourcesPath = path.join(projectPath, '.zide_resources');
+    const serviceXmlPath = path.join(zideResourcesPath, 'service.xml');
+    const propertiesXmlPath = path.join(zideResourcesPath, 'zide_properties.xml');
+    return fs.existsSync(serviceXmlPath) && fs.existsSync(propertiesXmlPath);
+}
+
+/**
+ * Find the default zide folder (sibling of project — from old extension).
+ */
+function findDefaultZideFolder(projectPath: string): string | undefined {
+    const parentPath = path.dirname(path.resolve(projectPath));
+    const candidate = path.join(parentPath, 'zide');
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+    }
+    return undefined;
+}
+
+/**
+ * Resolve the Zide.properties path within a zide folder.
+ */
+function resolveModuleZidePropsPath(zideFolderPath: string, repositoryModuleDir: string, deployType: string = 'M19'): string {
+    return path.join(zideFolderPath, 'deployment', repositoryModuleDir, deployType, 'Zide.properties');
+}
+
+/**
+ * Ask user to pick a zide folder when the default one is not found (from old extension).
+ */
+async function askUserForZideFolder(projectPath: string): Promise<string | undefined> {
+    const selectedFolder = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        defaultUri: vscode.Uri.file(path.dirname(projectPath)),
+        openLabel: 'Select zide Folder',
+        title: 'Select zide folder to resolve launch.vmarguments'
+    });
+
+    if (!selectedFolder || selectedFolder.length === 0) {
+        return undefined;
+    }
+    return selectedFolder[0].fsPath;
+}
 
 export class ZideSetupWizard {
     static async run(projectRoot: string): Promise<TomcatServer | undefined> {
@@ -32,7 +81,7 @@ export class ZideSetupWizard {
         } else {
             const picked = await vscode.window.showQuickPick(
                 services.map(s => ({ label: s.name, service: s })),
-                { placeHolder: 'Select a service' }
+                { placeHolder: 'Select a service', ignoreFocusOut: true }
             );
             if (!picked) { return undefined; }
             selectedService = picked.service;
@@ -42,24 +91,109 @@ export class ZideSetupWizard {
         const zidePropsXmlPath = path.join(zideResourcesPath, 'zide_properties.xml');
         const envProps = ZideConfigParser.parseZidePropertiesXml(zidePropsXmlPath);
 
-        // Parse Zide.properties (module-level)
-        const zidePropsFile = PathResolver.findZidePropertiesFile(projectRoot);
-        const moduleProps = zidePropsFile ? ModuleZidePropsParser.parse(zidePropsFile) : null;
+        // --- Extract repositoryModuleDir and deployType (from old extension) ---
+        const repositoryModuleDir = selectedService.properties['ZIDE.REPOSITORY_MODULE_DIR']
+            || services[0]?.properties['ZIDE.REPOSITORY_MODULE_DIR']
+            || '';
+        const deployType = selectedService.properties['ZIDE.DEPLOY_TYPE']
+            || services[0]?.properties['ZIDE.DEPLOY_TYPE']
+            || 'M19';
 
-        // Build server configuration
-        const tomcatPath = selectedService.properties['tomcat.home'] ||
-            envProps['tomcat.home'] ||
-            path.join(projectRoot, 'tomcat');
+        // --- Resolve zide folder and Zide.properties (from old extension) ---
+        let zideFolderPath = findDefaultZideFolder(projectRoot);
+        let zidePropertiesPath: string | undefined;
+        let moduleProps: ReturnType<typeof ModuleZidePropsParser.parse> | null = null;
 
-        const port = parseInt(selectedService.properties['http.port'] || envProps['http.port'] || '8080', 10);
-        const debugPort = parseInt(selectedService.properties['debug.port'] || envProps['debug.port'] || '8787', 10);
-        const shutdownPort = parseInt(selectedService.properties['shutdown.port'] || envProps['shutdown.port'] || '9285', 10);
-        const contextPath = selectedService.properties['context.path'] || envProps['context.path'] || `/${selectedService.name}`;
-        const deploymentDir = selectedService.properties['deployment.dir'] || envProps['deployment.dir'] || '';
+        if (zideFolderPath && repositoryModuleDir) {
+            zidePropertiesPath = resolveModuleZidePropsPath(zideFolderPath, repositoryModuleDir, deployType);
+            if (fs.existsSync(zidePropertiesPath)) {
+                moduleProps = ModuleZidePropsParser.parse(zidePropertiesPath);
+            }
+        }
+
+        // If we couldn't find moduleProps and we have a repositoryModuleDir, ask user (from old extension)
+        if (!moduleProps && repositoryModuleDir) {
+            const pickedZideFolder = await askUserForZideFolder(projectRoot);
+            if (pickedZideFolder) {
+                zideFolderPath = pickedZideFolder;
+                zidePropertiesPath = resolveModuleZidePropsPath(zideFolderPath, repositoryModuleDir, deployType);
+                if (fs.existsSync(zidePropertiesPath)) {
+                    moduleProps = ModuleZidePropsParser.parse(zidePropertiesPath);
+                } else {
+                    vscode.window.showWarningMessage(
+                        `ZIDE: Could not resolve Zide.properties under ${zideFolderPath}/deployment/${repositoryModuleDir}/${deployType}. Continuing without launch.vmarguments.`
+                    );
+                }
+            }
+        }
+
+        // Also try local Zide.properties (fallback)
+        if (!moduleProps) {
+            const localPropsFile = PathResolver.findZidePropertiesFile(projectRoot);
+            if (localPropsFile) {
+                zidePropertiesPath = localPropsFile;
+                moduleProps = ModuleZidePropsParser.parse(localPropsFile);
+            }
+        }
+
+        // Derive Tomcat path from ZIDE.DEPLOYMENT_FOLDER
+        const deploymentFolder = selectedService.properties['ZIDE.DEPLOYMENT_FOLDER'] || '';
+        let tomcatPath: string;
+
+        if (deploymentFolder) {
+            const candidateTomcat = path.join(deploymentFolder, 'AdventNet', 'Sas', 'tomcat');
+            tomcatPath = fs.existsSync(candidateTomcat) ? candidateTomcat : deploymentFolder;
+        } else {
+            tomcatPath = selectedService.properties['tomcat.home'] ||
+                envProps['tomcat.home'] ||
+                path.join(projectRoot, 'tomcat');
+        }
+
+        // --- Validate Tomcat path (from old extension) ---
+        const catalinaScript = path.join(tomcatPath, 'bin', 'catalina.sh');
+        if (!fs.existsSync(catalinaScript)) {
+            if (!deploymentFolder) {
+                vscode.window.showErrorMessage('ZIDE: ZIDE.DEPLOYMENT_FOLDER not found in service.xml configuration.');
+            } else {
+                vscode.window.showErrorMessage(`ZIDE: Invalid Tomcat path: ${tomcatPath}\n\nEnsure it contains bin/catalina.sh`);
+            }
+            return undefined;
+        }
+
+        const serviceKey = selectedService.properties['ZIDE.SERVICE_KEY'] || selectedService.name;
+        const parentService = selectedService.properties['ZIDE.PARENT_SERVICE'] || selectedService.name || path.basename(projectRoot);
+        const tomcatVersion = selectedService.properties['ZIDE.TOMCAT_VERSION'] || '';
+
+        // deploymentDir = webapp directory (where WEB-INF lives), NOT deployment root
+        const deploymentDir = path.join(tomcatPath, 'webapps', parentService);
+
+        const port = parseInt(
+            envProps['ZIDE.HTTP_PORT'] || selectedService.properties['http.port'] || envProps['http.port'] || '8080', 10
+        );
+        const debugPort = parseInt(
+            selectedService.properties['debug.port'] || envProps['debug.port'] || '8787', 10
+        );
+        const shutdownPort = parseInt(
+            selectedService.properties['shutdown.port'] || envProps['shutdown.port'] || '9285', 10
+        );
+        const contextPath = selectedService.properties['context.path'] ||
+            envProps['context.path'] ||
+            `/${parentService}`;
+
+        // --- Build runtime properties map (from old extension) ---
+        const zideRuntimeProperties: Record<string, string> = {
+            ...selectedService.properties,
+            ...envProps
+        };
+
+        // --- Server name includes version hint (from old extension) ---
+        const serverName = tomcatVersion
+            ? `ZIDE-${parentService} (${tomcatVersion})`
+            : parentService || path.basename(projectRoot);
 
         const server: TomcatServer = {
             id: crypto.randomUUID(),
-            name: selectedService.name || path.basename(projectRoot),
+            name: serverName,
             path: tomcatPath,
             status: 'stopped',
             port,
@@ -68,11 +202,18 @@ export class ZideSetupWizard {
             contextPath,
             deploymentDir,
             zideResourcesPath,
-            zidePropertiesPath: zidePropsFile || '',
-            serviceName: selectedService.name,
+            zidePropertiesPath: zidePropertiesPath || '',
+            serviceName: serviceKey,
             antHome: selectedService.properties['ant.home'] || envProps['ant.home'] || '',
-            javaHome: selectedService.properties['java.home'] || envProps['java.home'] || '',
-            vmArguments: moduleProps?.launchVmArguments || selectedService.properties['vm.arguments'] || ''
+            javaHome: selectedService.properties['ZIDE.PROJECT_JRE_HOME'] || envProps['java.home'] || '',
+            vmArguments: '',
+            description: `Auto-configured from ZIDE service: ${serviceKey}`,
+            zideServiceKey: serviceKey,
+            zideFolderPath: zideFolderPath,
+            zideLaunchVmArguments: moduleProps?.launchVmArguments || '',
+            repositoryModuleDir,
+            deployType,
+            zideRuntimeProperties
         };
 
         // Register server

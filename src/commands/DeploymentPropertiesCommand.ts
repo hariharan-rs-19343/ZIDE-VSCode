@@ -33,13 +33,15 @@ export class DeploymentPropertiesCommand {
 
         const hostName = await vscode.window.showInputBox({
             prompt: 'Host Name',
-            value: extract('ZIDE.HOST_NAME') || 'localhost'
+            value: extract('ZIDE.HOST_NAME') || 'localhost',
+            validateInput: v => v.trim() ? undefined : 'Host name cannot be empty'
         });
         if (hostName === undefined) { return; }
 
         const userMail = await vscode.window.showInputBox({
             prompt: 'User Email',
-            value: extract('ZIDE.USER_MAIL') || `${process.env['USER'] || ''}@zohocorp.com`
+            value: extract('ZIDE.USER_MAIL') || `${process.env['USER'] || ''}@zohocorp.com`,
+            validateInput: v => v.trim() ? undefined : 'Email cannot be empty'
         });
         if (userMail === undefined) { return; }
 
@@ -51,13 +53,21 @@ export class DeploymentPropertiesCommand {
 
         const httpPort = await vscode.window.showInputBox({
             prompt: 'HTTP Port',
-            value: extract('ZIDE.HTTP_PORT') || String(server.port)
+            value: extract('ZIDE.HTTP_PORT') || String(server.port),
+            validateInput: v => {
+                const n = Number(v);
+                return Number.isInteger(n) && n >= 1 && n <= 65535 ? undefined : 'Port must be 1-65535';
+            }
         });
         if (httpPort === undefined) { return; }
 
         const httpsPort = await vscode.window.showInputBox({
             prompt: 'HTTPS Port',
-            value: extract('ZIDE.HTTPS_PORT') || '8443'
+            value: extract('ZIDE.HTTPS_PORT') || '8443',
+            validateInput: v => {
+                const n = Number(v);
+                return Number.isInteger(n) && n >= 1 && n <= 65535 ? undefined : 'Port must be 1-65535';
+            }
         });
         if (httpsPort === undefined) { return; }
 
@@ -78,13 +88,15 @@ export class DeploymentPropertiesCommand {
 
         const dbHost = await vscode.window.showInputBox({
             prompt: 'Database Hostname',
-            value: extract('ZIDE_DB_HOST') || 'localhost'
+            value: extract('ZIDE_DB_HOST') || 'localhost',
+            validateInput: v => v.trim() ? undefined : 'Database host cannot be empty'
         });
         if (dbHost === undefined) { return; }
 
         const dbUser = await vscode.window.showInputBox({
             prompt: 'Database Username',
-            value: extract('ZIDE_DB_USER') || 'root'
+            value: extract('ZIDE_DB_USER') || 'root',
+            validateInput: v => v.trim() ? undefined : 'Database username cannot be empty'
         });
         if (dbUser === undefined) { return; }
 

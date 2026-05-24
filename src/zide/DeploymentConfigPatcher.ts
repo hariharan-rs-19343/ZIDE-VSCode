@@ -1,14 +1,37 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { TomcatServer } from '../model/TomcatServer';
 
 export class DeploymentConfigPatcher {
-    static async patchAll(server: TomcatServer): Promise<void> {
+    private static logTimestamped(channel: vscode.OutputChannel | undefined, message: string): void {
+        if (!channel) { return; }
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        const ss = String(now.getSeconds()).padStart(2, '0');
+        channel.appendLine(`[${hh}:${mm}:${ss}] ${message}`);
+    }
+
+    static async patchAll(server: TomcatServer, outputChannel?: vscode.OutputChannel): Promise<void> {
+        this.logTimestamped(outputChannel, `Patching deployment configs for ${server.name}...`);
+
         await this.patchServerXml(server);
+        this.logTimestamped(outputChannel, `  Patched server.xml (ports, context, deployOnStartup)`);
+
         await this.patchWebXml(server);
-        await this.patchConfigurationProperties(server);
+
+        const configPatched = await this.patchConfigurationProperties(server);
+        if (configPatched) {
+            this.logTimestamped(outputChannel, `  Patched configuration.properties (database settings)`);
+        }
+
         await this.patchPersistenceConfigurations(server);
-        await this.patchSecurityProperties(server);
+
+        const secPatched = await this.patchSecurityProperties(server);
+        if (secPatched) {
+            this.logTimestamped(outputChannel, `  Patched security-properties.xml (IAM server, service name, logout URL)`);
+        }
     }
 
     static async patchServerXml(server: TomcatServer): Promise<void> {
@@ -42,13 +65,30 @@ export class DeploymentConfigPatcher {
             );
         }
 
-        // Add Context element if not present
-        if (server.contextPath && server.deploymentDir) {
-            const contextElement = `    <Context path="${server.contextPath}" docBase="${server.deploymentDir}" reloadable="false" />`;
-            if (!content.includes(`path="${server.contextPath}"`)) {
+        // Fix or add Context element (IntelliJ: docBase=PARENT_SERVICE relative to webapps, path="")
+        // Read PARENT_SERVICE from service.xml for the correct webapp folder name
+        let parentService = server.serviceName;
+        if (server.zideResourcesPath) {
+            const serviceXmlPath = path.join(server.zideResourcesPath, 'service.xml');
+            if (fs.existsSync(serviceXmlPath)) {
+                const svcContent = fs.readFileSync(serviceXmlPath, 'utf-8');
+                const parentMatch = svcContent.match(/name="ZIDE\.PARENT_SERVICE"\s+value="([^"]*)"/);
+                if (parentMatch?.[1]) { parentService = parentMatch[1]; }
+            }
+        }
+
+        if (parentService) {
+            const correctContext = `<Context docBase="${parentService}" path="" reloadable="false"/>`;
+
+            if (content.includes('<Context ')) {
+                content = content.replace(
+                    /<Context\s+[^/>]*\/>/g,
+                    correctContext
+                );
+            } else {
                 content = content.replace(
                     /(<\/Host>)/,
-                    `${contextElement}\n      $1`
+                    `            ${correctContext}\n      $1`
                 );
             }
         }
@@ -79,14 +119,14 @@ export class DeploymentConfigPatcher {
         fs.writeFileSync(webXmlPath, content, 'utf-8');
     }
 
-    static async patchConfigurationProperties(server: TomcatServer): Promise<void> {
-        if (!server.deploymentDir) { return; }
+    static async patchConfigurationProperties(server: TomcatServer): Promise<boolean> {
+        if (!server.deploymentDir) { return false; }
 
         const configPath = path.join(server.deploymentDir, 'WEB-INF', 'conf', 'configuration.properties');
-        if (!fs.existsSync(configPath)) { return; }
+        if (!fs.existsSync(configPath)) { return false; }
 
         const zidePropsPath = path.join(server.zideResourcesPath, 'zide_properties.xml');
-        if (!fs.existsSync(zidePropsPath)) { return; }
+        if (!fs.existsSync(zidePropsPath)) { return false; }
 
         const propsContent = fs.readFileSync(zidePropsPath, 'utf-8');
         const extract = (key: string): string | undefined => {
@@ -122,6 +162,7 @@ export class DeploymentConfigPatcher {
         for (const [key, value] of Object.entries(replacements)) {
             this.patchConfigProperty(configPath, key, value);
         }
+        return true;
     }
 
     static async patchPersistenceConfigurations(server: TomcatServer): Promise<void> {
@@ -161,14 +202,14 @@ export class DeploymentConfigPatcher {
         fs.writeFileSync(actualPath, content, 'utf-8');
     }
 
-    static async patchSecurityProperties(server: TomcatServer): Promise<void> {
-        if (!server.deploymentDir) { return; }
+    static async patchSecurityProperties(server: TomcatServer): Promise<boolean> {
+        if (!server.deploymentDir) { return false; }
 
         const securityPath = path.join(server.deploymentDir, 'WEB-INF', 'security-properties.xml');
-        if (!fs.existsSync(securityPath)) { return; }
+        if (!fs.existsSync(securityPath)) { return false; }
 
         const zidePropsPath = path.join(server.zideResourcesPath, 'zide_properties.xml');
-        if (!fs.existsSync(zidePropsPath)) { return; }
+        if (!fs.existsSync(zidePropsPath)) { return false; }
 
         const propsContent = fs.readFileSync(zidePropsPath, 'utf-8');
         const extract = (key: string): string | undefined => {
@@ -205,6 +246,7 @@ export class DeploymentConfigPatcher {
         if (modified) {
             fs.writeFileSync(securityPath, content, 'utf-8');
         }
+        return modified;
     }
 
     static patchConfigProperty(filePath: string, key: string, value: string): void {

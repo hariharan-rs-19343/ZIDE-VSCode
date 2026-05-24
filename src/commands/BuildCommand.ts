@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { StateManager } from '../persistence/StateManager';
 import { AntResolver } from '../deploysync/AntResolver';
 import { showError, showInfo } from '../util/notificationUtil';
 import { TomcatManager } from '../tomcat/TomcatManager';
+import { spawnShell } from '../util/processUtil';
 
 export class BuildCommand {
     static async run(): Promise<void> {
@@ -15,71 +15,53 @@ export class BuildCommand {
         }
 
         const projectDir = workspaceFolder.uri.fsPath;
-        const mapping = StateManager.getInstance().getMappingForProject(projectDir);
-        let antHome: string | undefined;
-        let buildFile: string | undefined;
+        const buildDir = path.join(projectDir, 'build');
 
-        if (mapping) {
-            const server = StateManager.getInstance().getServer(mapping.serverId);
-            if (server) {
-                antHome = AntResolver.resolveAntHome(server.antHome);
-            }
-        }
-
-        if (!antHome) {
-            antHome = AntResolver.resolveAntHome();
-        }
-
-        if (!antHome) {
-            showError('ANT_HOME not found. Set ANT_HOME environment variable or configure in server settings.');
+        if (!fs.existsSync(buildDir) || !fs.statSync(buildDir).isDirectory()) {
+            showError(`Build directory not found: ${buildDir}`);
             return;
         }
 
-        // Find build file
-        const candidates = [
-            path.join(projectDir, 'zide_build.xml'),
-            path.join(projectDir, 'build.xml')
-        ];
-
-        for (const candidate of candidates) {
-            if (fs.existsSync(candidate)) {
-                buildFile = candidate;
-                break;
-            }
+        const antHome = AntResolver.resolveAntHome();
+        if (!antHome) {
+            showError('ANT not found. Set ANT_HOME environment variable.');
+            return;
         }
 
-        if (!buildFile) {
-            const fileUri = await vscode.window.showOpenDialog({
-                canSelectFiles: true,
-                canSelectFolders: false,
-                filters: { 'XML files': ['xml'] },
-                openLabel: 'Select Build File'
-            });
-            if (!fileUri || fileUri.length === 0) { return; }
-            buildFile = fileUri[0].fsPath;
-        }
-
+        const antBin = path.join(antHome, 'bin', 'ant');
         const outputChannel = TomcatManager.getInstance().getOutputChannel();
+        outputChannel.clear();
         outputChannel.show(true);
-        outputChannel.appendLine(`[ZIDE] Running build: ${buildFile}`);
+        outputChannel.appendLine(`=== ZIDE Build: ${path.basename(projectDir)} ===`);
+        outputChannel.appendLine(`Build dir: ${buildDir}`);
+        outputChannel.appendLine(`ANT: ${antBin}\n`);
 
-        const properties: Record<string, string> = { 'project.dir': projectDir };
-        if (mapping) {
-            const server = StateManager.getInstance().getServer(mapping.serverId);
-            if (server?.deploymentDir) {
-                properties['deployment.dir'] = server.deploymentDir;
+        await vscode.window.withProgress(
+            { location: vscode.ProgressLocation.Notification, title: 'ZIDE: Building...', cancellable: false },
+            async () => {
+                return new Promise<void>((resolve) => {
+                    const child = spawnShell(`"${antBin}"`, buildDir);
+
+                    child.stdout?.on('data', (data: Buffer) => {
+                        outputChannel.append(data.toString());
+                    });
+
+                    child.stderr?.on('data', (data: Buffer) => {
+                        outputChannel.append(data.toString());
+                    });
+
+                    child.on('exit', (code) => {
+                        if (code === 0) {
+                            outputChannel.appendLine('\n=== Build complete ===');
+                            showInfo('Build completed successfully');
+                        } else {
+                            outputChannel.appendLine(`\nBuild FAILED (exit code ${code})`);
+                            showError(`ANT build failed with exit code ${code}`);
+                        }
+                        resolve();
+                    });
+                });
             }
-        }
-
-        const result = await AntResolver.runAnt(antHome, buildFile, ['default'], properties, projectDir);
-
-        outputChannel.appendLine(result.output);
-        if (result.success) {
-            outputChannel.appendLine('[ZIDE] Build successful');
-            showInfo('Build completed successfully');
-        } else {
-            outputChannel.appendLine('[ZIDE] Build failed');
-            showError('Build failed. Check ZIDE Output for details.');
-        }
+        );
     }
 }

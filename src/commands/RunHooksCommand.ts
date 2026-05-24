@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import { StateManager } from '../persistence/StateManager';
 import { AntResolver } from '../deploysync/AntResolver';
 import { PathResolver } from '../parser/PathResolver';
@@ -18,6 +19,9 @@ interface HookDef {
 const PRECREATION: HookDef = { target: 'precreationhook', hookName: 'precreation', useZideHookDir: true, label: 'Precreation Hook' };
 const POSTCREATION: HookDef = { target: 'postcreationhook', hookName: 'postcreation', useZideHookDir: false, label: 'Postcreation Hook' };
 const ZIDEMODULE: HookDef = { target: 'zidemodulehook', hookName: 'zideoperations', useZideHookDir: true, label: 'ZideModule Hook' };
+const PRELAUNCH: HookDef = { target: 'preservicelaunch', hookName: 'prelaunch', useZideHookDir: true, label: 'Pre-Launch Hook' };
+const PGSQL_REINIT: HookDef = { target: 'pgsqlreinit', hookName: 'postreinit', useZideHookDir: false, label: 'PostgreSQL Reinit' };
+const MYSQL_REINIT: HookDef = { target: 'mysqlreinit', hookName: 'postreinit', useZideHookDir: false, label: 'MySQL Reinit' };
 
 const REQUIRED_PROPERTIES: Record<string, () => string> = {
     'ZIDE.HOST_NAME': () => resolveHostName(),
@@ -39,7 +43,6 @@ const REQUIRED_PROPERTIES: Record<string, () => string> = {
 function resolveHostName(): string {
     const csezDomain = '.csez.zohocorpin.com';
     try {
-        const { execSync } = require('child_process');
         const hostname = execSync('hostname', { encoding: 'utf-8' }).trim();
         return hostname.endsWith(csezDomain) ? hostname : `${hostname}${csezDomain}`;
     } catch {
@@ -64,12 +67,29 @@ export class RunHooksCommand {
         await this.runHooks([ZIDEMODULE], 'Run ZideModule Hook');
     }
 
+    static async runPreLaunch(): Promise<void> {
+        await this.runHooks([PRELAUNCH], 'Run Pre-Launch Hook');
+    }
+
+    static async runDbReinit(): Promise<void> {
+        const dbType = await vscode.window.showQuickPick(
+            ['PostgreSQL', 'MySQL'],
+            { placeHolder: 'Select database type for reinit' }
+        );
+        if (!dbType) { return; }
+        const hook = dbType === 'PostgreSQL' ? PGSQL_REINIT : MYSQL_REINIT;
+        await this.runHooks([hook], `Run ${hook.label}`);
+    }
+
     static async pickAndRun(): Promise<void> {
         const picks = [
             { label: 'Run All Hooks', hooks: [PRECREATION, POSTCREATION, ZIDEMODULE] },
             { label: PRECREATION.label, hooks: [PRECREATION] },
             { label: POSTCREATION.label, hooks: [POSTCREATION] },
-            { label: ZIDEMODULE.label, hooks: [ZIDEMODULE] }
+            { label: ZIDEMODULE.label, hooks: [ZIDEMODULE] },
+            { label: PRELAUNCH.label, hooks: [PRELAUNCH] },
+            { label: 'DB Reinit (PostgreSQL)', hooks: [PGSQL_REINIT] },
+            { label: 'DB Reinit (MySQL)', hooks: [MYSQL_REINIT] }
         ];
 
         const selected = await vscode.window.showQuickPick(picks, { placeHolder: 'Select hook to run' });
@@ -104,7 +124,21 @@ export class RunHooksCommand {
         const mapping = StateManager.getInstance().getMappingForProject(projectPath);
         if (mapping) {
             const server = StateManager.getInstance().getServer(mapping.serverId);
-            if (server) { deploymentPath = server.path; }
+            if (server && server.deploymentDir) {
+                const tomcatPath = path.join(server.deploymentDir, 'AdventNet', 'Sas', 'tomcat');
+                deploymentPath = fs.existsSync(tomcatPath) ? tomcatPath : server.path;
+            }
+        }
+        if (!deploymentPath) {
+            const serviceXmlPath = path.join(zideResourcesPath, 'service.xml');
+            if (fs.existsSync(serviceXmlPath)) {
+                const serviceContent = fs.readFileSync(serviceXmlPath, 'utf-8');
+                const deployFolder = serviceContent.match(/name="ZIDE\.DEPLOYMENT_FOLDER"\s+value="([^"]*)"/)?.[1];
+                if (deployFolder) {
+                    const tomcatPath = path.join(deployFolder, 'AdventNet', 'Sas', 'tomcat');
+                    deploymentPath = fs.existsSync(tomcatPath) ? tomcatPath : deployFolder;
+                }
+            }
         }
 
         const services = ZideConfigParser.parseServiceXml(path.join(zideResourcesPath, 'service.xml'));
@@ -137,12 +171,14 @@ export class RunHooksCommand {
 
                     outputChannel.appendLine(`\n--- ${hook.label} (${hook.target}) ---`);
 
-                    const result = await AntResolver.runAnt(antHome, buildXml, ['clone', `-Dtarget=${hook.target}`], {
-                        'basedir': baseDir,
-                        'REPOSITORY_PATH': repositoryPath,
-                        'DEPLOYMENT_PATH': deploymentPath,
-                        'ZIDE.PARENT_SERVICE': parentService
-                    }, repositoryPath);
+                    // Build comprehensive system properties (like Eclipse's buildAntHookSystemProperties)
+                    const hookProperties = this.buildHookProperties(
+                        repositoryPath, deploymentPath, parentService, zideResourcesPath, services[0]
+                    );
+                    hookProperties['basedir'] = baseDir;
+
+                    const result = await AntResolver.runAnt(antHome, buildXml, ['clone', `-Dtarget=${hook.target}`],
+                        hookProperties, repositoryPath);
 
                     if (result.output) {
                         outputChannel.appendLine(result.output);
@@ -198,5 +234,69 @@ export class RunHooksCommand {
         propsContent = propsContent.substring(0, insertionPoint) + newEntries + propsContent.substring(insertionPoint);
         fs.writeFileSync(propsFile, propsContent, 'utf-8');
         outputChannel.appendLine('  zide_properties.xml updated.\n');
+    }
+
+    /**
+     * Build comprehensive system properties for ANT hook execution.
+     * Mirrors Eclipse's ProjectHook.buildAntHookSystemProperties():
+     * - DOWNLOAD_URL from service config
+     * - REPOSITORY_PATH.<moduledir> for parent + dependent services
+     * - All zide_properties.xml entries
+     * - All service.xml property entries
+     */
+    private static buildHookProperties(
+        repositoryPath: string,
+        deploymentPath: string,
+        parentService: string,
+        zideResourcesPath: string,
+        parentServiceConfig?: { name: string; properties: Record<string, string> }
+    ): Record<string, string> {
+        const props: Record<string, string> = {};
+
+        // Core properties (always included)
+        props['REPOSITORY_PATH'] = repositoryPath;
+        props['DEPLOYMENT_PATH'] = deploymentPath;
+        props['ZIDE.PARENT_SERVICE'] = parentService;
+
+        // DOWNLOAD_URL from service config
+        if (parentServiceConfig?.properties['ZIDE.DOWNLOAD_URL']) {
+            let dloadUrl = parentServiceConfig.properties['ZIDE.DOWNLOAD_URL'];
+            // Strip filename from URL (Eclipse: dloadUrl.substring(0, dloadUrl.lastIndexOf("/")))
+            const lastSlash = dloadUrl.lastIndexOf('/');
+            if (lastSlash > 0 && dloadUrl.includes('://')) {
+                dloadUrl = dloadUrl.substring(0, lastSlash);
+            }
+            props['DOWNLOAD_URL'] = dloadUrl;
+        }
+
+        // REPOSITORY_PATH.<moduledir> for parent and dependent services
+        const serviceXmlPath = path.join(zideResourcesPath, 'service.xml');
+        const services = ZideConfigParser.parseServiceXml(serviceXmlPath);
+        for (const svc of services) {
+            const moduleDir = svc.properties['ZIDE.MODULE_DIR'] || svc.name;
+            props[`REPOSITORY_PATH.${moduleDir}`] = repositoryPath;
+        }
+
+        // All zide_properties.xml entries (key-value pairs passed directly)
+        const propsFile = path.join(zideResourcesPath, 'zide_properties.xml');
+        if (fs.existsSync(propsFile)) {
+            const zideProps = ZideConfigParser.parseZidePropertiesXml(propsFile);
+            for (const [key, value] of Object.entries(zideProps)) {
+                if (value) {
+                    props[key] = value;
+                }
+            }
+        }
+
+        // All service.xml property entries from the parent service
+        if (parentServiceConfig) {
+            for (const [key, value] of Object.entries(parentServiceConfig.properties)) {
+                if (value && !props[key]) {
+                    props[key] = value;
+                }
+            }
+        }
+
+        return props;
     }
 }
