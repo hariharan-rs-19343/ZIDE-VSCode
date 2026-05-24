@@ -382,17 +382,25 @@ export class TomcatManager {
 
     // ── App Logs ─────────────────────────────────────────────────────────
     async showAppLogs(server: TomcatServer): Promise<void> {
-        const logsDir = path.join(server.path, 'logs');
+        // Logs are at {deploymentFolder}/AdventNet/Sas/logs/ (parent of tomcat)
+        const logsDir = path.join(server.path, '..', 'logs');
 
         if (!fs.existsSync(logsDir)) {
-            showError('Logs directory not found');
+            showError('Logs directory not found. Start the server first to generate logs.');
             return;
         }
 
         const files = fs.readdirSync(logsDir);
-        const logFile = files.find(f => f.includes('application') && f.endsWith('.txt'));
+        const logFile = files
+            .filter(f => f.endsWith('application0.txt'))
+            .sort((a, b) => {
+                const sa = fs.statSync(path.join(logsDir, a)).mtimeMs;
+                const sb = fs.statSync(path.join(logsDir, b)).mtimeMs;
+                return sb - sa;
+            })[0];
+
         if (!logFile) {
-            showError('No application log file found');
+            showError('No *application0.txt log file found in Sas/logs/');
             return;
         }
 
@@ -402,6 +410,7 @@ export class TomcatManager {
         const last5000 = lines.slice(-5000).join('\n');
 
         this.appLogsChannel.clear();
+        this.appLogsChannel.appendLine(`=== Log file: ${logPath} (last 5000 lines) ===\n`);
         this.appLogsChannel.append(last5000);
         this.appLogsChannel.show(true);
     }

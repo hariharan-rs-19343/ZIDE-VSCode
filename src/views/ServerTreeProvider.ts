@@ -15,7 +15,17 @@ export class ServerTreeProvider implements vscode.TreeDataProvider<ServerTreeIte
     }
 
     getChildren(_element?: ServerTreeItem): ServerTreeItem[] {
-        const servers = StateManager.getInstance().getServers();
-        return servers.map(server => new ServerTreeItem(server));
+        const projectPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!projectPath) { return []; }
+
+        const stateManager = StateManager.getInstance();
+        const mapping = stateManager.getMappingForProject(projectPath);
+
+        if (mapping) {
+            const server = stateManager.getServer(mapping.serverId);
+            return server ? [new ServerTreeItem(server)] : [];
+        }
+
+        return [];
     }
 }

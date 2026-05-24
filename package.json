@@ -258,7 +258,7 @@
           "group": "navigation@2"
         },
         {
-          "command": "zide.newProject",
+          "command": "zide.appLogs",
           "when": "view == zide.servers",
           "group": "navigation@3"
         },
@@ -266,6 +266,21 @@
           "command": "zide.openSettings",
           "when": "view == zide.servers",
           "group": "navigation@4"
+        },
+        {
+          "command": "zide.run",
+          "when": "view == zide.servers",
+          "group": "navigation@5"
+        },
+        {
+          "command": "zide.debug",
+          "when": "view == zide.servers",
+          "group": "navigation@6"
+        },
+        {
+          "command": "zide.stop",
+          "when": "view == zide.servers",
+          "group": "navigation@7"
         }
       ],
       "view/item/context": [

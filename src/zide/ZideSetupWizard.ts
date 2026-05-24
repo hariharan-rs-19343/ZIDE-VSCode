@@ -228,6 +228,98 @@ export class ZideSetupWizard {
         });
 
         vscode.window.showInformationMessage(`ZIDE: Server "${server.name}" configured from project`);
+
+        // Auto-configure workspace: Java classpath + launch configs
+        this.configureWorkspace(projectRoot, server, deploymentFolder);
+
         return server;
+    }
+
+    private static configureWorkspace(projectRoot: string, server: TomcatServer, deploymentFolder: string): void {
+        const vscodeDir = path.join(projectRoot, '.vscode');
+        if (!fs.existsSync(vscodeDir)) {
+            fs.mkdirSync(vscodeDir, { recursive: true });
+        }
+
+        // 1. Java classpath: add WEB-INF/lib jars to referencedLibraries
+        const parentService = server.zideRuntimeProperties?.['ZIDE.PARENT_SERVICE'] || server.serviceName;
+        const webinfLib = path.join(deploymentFolder, 'AdventNet', 'Sas', 'tomcat', 'webapps', parentService, 'WEB-INF', 'lib');
+        const tomcatLib = path.join(deploymentFolder, 'AdventNet', 'Sas', 'tomcat', 'lib');
+
+        const settingsPath = path.join(vscodeDir, 'settings.json');
+        let settings: Record<string, unknown> = {};
+        if (fs.existsSync(settingsPath)) {
+            try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { settings = {}; }
+        }
+
+        const libs: string[] = [];
+        if (fs.existsSync(webinfLib)) { libs.push(path.join(webinfLib, '**', '*.jar')); }
+        if (fs.existsSync(tomcatLib)) { libs.push(path.join(tomcatLib, '**', '*.jar')); }
+        libs.push('lib/**/*.jar');
+
+        settings['java.project.referencedLibraries'] = libs;
+
+        // Set compiled class output to deployment WEB-INF/classes
+        // const webinfClasses = path.join(deploymentFolder, 'AdventNet', 'Sas', 'tomcat', 'webapps', parentService, 'WEB-INF', 'classes');
+        // settings['java.project.outputPath'] = webinfClasses;
+        settings['java.project.sourcePaths'] = ['src/main/java'];
+
+        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 4), 'utf-8');
+
+        // 2. Generate tasks.json for ZIDE server tasks
+        const tasksPath = path.join(vscodeDir, 'tasks.json');
+        const tasksContent = {
+            version: '2.0.0',
+            tasks: [
+                {
+                    label: 'ZIDE: Run Server',
+                    type: 'shell',
+                    command: '${command:zide.run}',
+                    problemMatcher: [],
+                    group: { kind: 'build', isDefault: false }
+                },
+                {
+                    label: 'ZIDE: Debug Server',
+                    type: 'shell',
+                    command: '${command:zide.debug}',
+                    problemMatcher: [],
+                    group: { kind: 'build', isDefault: false }
+                },
+                {
+                    label: 'ZIDE: Stop Server',
+                    type: 'shell',
+                    command: '${command:zide.stop}',
+                    problemMatcher: []
+                }
+            ]
+        };
+        fs.writeFileSync(tasksPath, JSON.stringify(tasksContent, null, 4), 'utf-8');
+
+        // 3. Generate launch.json for Run/Debug buttons in editor title bar
+        const launchPath = path.join(vscodeDir, 'launch.json');
+        if (!fs.existsSync(launchPath)) {
+            const launchContent = {
+                version: '0.2.0',
+                configurations: [
+                    {
+                        type: 'java',
+                        name: 'ZIDE: Run Server',
+                        request: 'attach',
+                        hostName: 'localhost',
+                        port: server.debugPort,
+                        preLaunchTask: 'ZIDE: Run Server'
+                    },
+                    {
+                        type: 'java',
+                        name: 'ZIDE: Debug Server',
+                        request: 'attach',
+                        hostName: 'localhost',
+                        port: server.debugPort,
+                        preLaunchTask: 'ZIDE: Debug Server'
+                    }
+                ]
+            };
+            fs.writeFileSync(launchPath, JSON.stringify(launchContent, null, 4), 'utf-8');
+        }
     }
 }
